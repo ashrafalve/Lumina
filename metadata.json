@@ -1,0 +1,8 @@
+{
+  "name": "Lumina Notes AI",
+  "description": "An advanced, privacy-first AI note-taking application that runs entirely on local storage. Features smart summaries, AI-driven tagging, writing refinement, and OCR, all powered by Gemini.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
