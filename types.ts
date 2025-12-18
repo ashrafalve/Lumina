@@ -10,11 +10,14 @@ export interface Note {
   isPinned: boolean;
 }
 
+export type ViewType = 'all' | 'favorites';
+
 export interface AppState {
   notes: Note[];
   selectedNoteId: string | null;
   searchQuery: string;
   activeTag: string | null;
+  viewType: ViewType;
   isSidebarOpen: boolean;
   isAIProcessing: boolean;
   deleteConfirmId: string | null;

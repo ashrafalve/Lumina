@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Note, AIServiceTask } from '../types';
 import { geminiService } from '../services/geminiService';
+import { GoogleGenAI, Modality, LiveServerMessage } from '@google/genai';
 
 interface NoteEditorProps {
   note: Note | null;
@@ -25,9 +26,13 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, onSave, onClose }) => {
   const [tags, setTags] = useState<string[]>([]);
   const [color, setColor] = useState('#4F46E5');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isDictating, setIsDictating] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved');
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoSaveTimerRef = useRef<number | null>(null);
+  const liveSessionRef = useRef<any>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
     if (note) {
@@ -41,36 +46,16 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, onSave, onClose }) => {
   // Auto-save logic
   useEffect(() => {
     if (!note) return;
-    
-    // Don't auto-save if values haven't changed from the initial note state
-    if (
-      title === note.title && 
-      content === note.content && 
-      JSON.stringify(tags) === JSON.stringify(note.tags) &&
-      color === note.color
-    ) {
+    if (title === note.title && content === note.content && JSON.stringify(tags) === JSON.stringify(note.tags) && color === note.color) {
       return;
     }
-
     setSaveStatus('saving');
-    
     if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
-    
     autoSaveTimerRef.current = window.setTimeout(() => {
-      onSave({
-        ...note,
-        title,
-        content,
-        tags,
-        color,
-        updatedAt: Date.now(),
-      });
+      onSave({ ...note, title, content, tags, color, updatedAt: Date.now() });
       setSaveStatus('saved');
     }, 800);
-
-    return () => {
-      if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
-    };
+    return () => { if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current); };
   }, [title, content, tags, color]);
 
   const handleAIAction = async (task: AIServiceTask) => {
@@ -111,6 +96,74 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, onSave, onClose }) => {
     reader.readAsDataURL(file);
   };
 
+  // Dictation logic using Gemini Live API
+  const startDictation = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      
+      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      audioContextRef.current = inputCtx;
+
+      const sessionPromise = ai.live.connect({
+        model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+        callbacks: {
+          onopen: () => {
+            const source = inputCtx.createMediaStreamSource(stream);
+            const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
+            scriptProcessor.onaudioprocess = (e) => {
+              const inputData = e.inputBuffer.getChannelData(0);
+              const l = inputData.length;
+              const int16 = new Int16Array(l);
+              for (let i = 0; i < l; i++) int16[i] = inputData[i] * 32768;
+              const bytes = new Uint8Array(int16.buffer);
+              let binary = '';
+              for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+              const base64 = btoa(binary);
+
+              sessionPromise.then((session) => {
+                session.sendRealtimeInput({ media: { data: base64, mimeType: 'audio/pcm;rate=16000' } });
+              });
+            };
+            source.connect(scriptProcessor);
+            scriptProcessor.connect(inputCtx.destination);
+          },
+          onmessage: async (message: LiveServerMessage) => {
+            if (message.serverContent?.inputTranscription) {
+              const text = message.serverContent.inputTranscription.text;
+              if (text) setContent(prev => prev + (prev.endsWith(' ') ? '' : ' ') + text);
+            }
+          },
+          onerror: (e) => console.error('Dictation error:', e),
+          onclose: () => setIsDictating(false),
+        },
+        config: {
+          responseModalities: [Modality.AUDIO],
+          inputAudioTranscription: {},
+          systemInstruction: 'You are a professional transcriber. Accurately transcribe the user audio into text notes. Do not reply, just transcribe.',
+        },
+      });
+
+      liveSessionRef.current = await sessionPromise;
+      setIsDictating(true);
+    } catch (err) {
+      console.error('Failed to start dictation:', err);
+      alert('Could not access microphone.');
+    }
+  };
+
+  const stopDictation = () => {
+    if (liveSessionRef.current) {
+      liveSessionRef.current.close();
+      liveSessionRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    setIsDictating(false);
+  };
+
   if (!note) return null;
 
   return (
@@ -131,7 +184,6 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, onSave, onClose }) => {
           </div>
         </div>
 
-        {/* Color Palette */}
         <div className="hidden md:flex items-center gap-1.5 px-4">
           {NOTE_COLORS.map(c => (
             <button
@@ -139,7 +191,6 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, onSave, onClose }) => {
               onClick={() => setColor(c)}
               style={{ backgroundColor: c }}
               className={`w-5 h-5 rounded-full transition-transform hover:scale-125 ${color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-[#0a0a0a] scale-110' : ''}`}
-              title={`Color: ${c}`}
             />
           ))}
         </div>
@@ -148,27 +199,19 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, onSave, onClose }) => {
           {isProcessing && (
              <div className="flex items-center gap-2 px-3 py-1 bg-indigo-500/10 text-indigo-400 rounded-full animate-pulse border border-indigo-500/20">
                <i className="fas fa-sparkles text-xs"></i>
-               <span className="text-[10px] font-bold uppercase">AI Processing</span>
+               <span className="text-[10px] font-bold uppercase">AI</span>
              </div>
           )}
-          <button 
-            onClick={onClose}
-            className="px-4 py-1.5 bg-white/5 hover:bg-white/10 text-white rounded-lg text-xs font-bold transition-all"
-          >
+          <button onClick={onClose} className="px-4 py-1.5 bg-white/5 hover:bg-white/10 text-white rounded-lg text-xs font-bold transition-all">
             Done
           </button>
         </div>
       </div>
 
-      {/* Editor Content */}
       <div className="flex-1 overflow-y-auto px-4 py-6 md:px-12 max-w-4xl mx-auto w-full">
-        {/* Mobile Color Palette */}
         <div className="flex md:hidden items-center justify-center gap-3 mb-8">
            {NOTE_COLORS.map(c => (
-            <button
-              key={c}
-              onClick={() => setColor(c)}
-              style={{ backgroundColor: c }}
+            <button key={c} onClick={() => setColor(c)} style={{ backgroundColor: c }}
               className={`w-6 h-6 rounded-full transition-transform ${color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-[#0a0a0a] scale-110' : ''}`}
             />
           ))}
@@ -192,57 +235,36 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, onSave, onClose }) => {
               </button>
             </span>
           ))}
-          <button 
-            onClick={() => handleAIAction(AIServiceTask.TAGS)}
-            className="px-2.5 py-1 border border-dashed border-white/10 text-gray-500 hover:text-indigo-400 hover:border-indigo-400/50 rounded-lg text-xs font-bold transition-all flex items-center gap-2"
-          >
-            <i className="fas fa-plus-circle"></i>
-            Auto Tags
+          <button onClick={() => handleAIAction(AIServiceTask.TAGS)} className="px-2.5 py-1 border border-dashed border-white/10 text-gray-500 hover:text-indigo-400 hover:border-indigo-400/50 rounded-lg text-xs font-bold transition-all flex items-center gap-2">
+            <i className="fas fa-plus-circle"></i> Auto Tags
           </button>
         </div>
 
         <textarea
           value={content}
           onChange={(e) => setContent(e.target.value)}
-          placeholder="Start typing your thoughts here..."
+          placeholder="Start typing or use dictation..."
           className="w-full h-full bg-transparent border-none outline-none text-xl text-gray-300 placeholder:text-white/5 resize-none leading-relaxed font-light"
         />
       </div>
 
-      {/* Action Bar */}
       <div className="p-4 bg-[#0d0d0d] border-t border-white/5 flex items-center gap-2 overflow-x-auto no-scrollbar pb-safe">
         <button 
-          onClick={() => handleAIAction(AIServiceTask.SUMMARIZE)}
-          disabled={isProcessing}
-          className="flex-shrink-0 px-4 py-2.5 bg-white/5 hover:bg-indigo-600/20 text-gray-300 hover:text-indigo-400 rounded-xl text-xs font-bold border border-white/5 transition-all flex items-center gap-2"
+          onClick={isDictating ? stopDictation : startDictation}
+          className={`flex-shrink-0 px-4 py-2.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${isDictating ? 'bg-red-500/20 text-red-500 border-red-500/30' : 'bg-white/5 text-gray-300 border-white/5 hover:bg-white/10'}`}
         >
-          <i className="fas fa-align-left"></i>
-          Summarize
-        </button>
-        <button 
-          onClick={() => handleAIAction(AIServiceTask.REFINE)}
-          disabled={isProcessing}
-          className="flex-shrink-0 px-4 py-2.5 bg-white/5 hover:bg-indigo-600/20 text-gray-300 hover:text-indigo-400 rounded-xl text-xs font-bold border border-white/5 transition-all flex items-center gap-2"
-        >
-          <i className="fas fa-wand-magic-sparkles"></i>
-          Refine
-        </button>
-        <button 
-          onClick={() => handleAIAction(AIServiceTask.CONTINUE)}
-          disabled={isProcessing}
-          className="flex-shrink-0 px-4 py-2.5 bg-white/5 hover:bg-indigo-600/20 text-gray-300 hover:text-indigo-400 rounded-xl text-xs font-bold border border-white/5 transition-all flex items-center gap-2"
-        >
-          <i className="fas fa-pen-nib"></i>
-          Continue
+          <i className={`fas ${isDictating ? 'fa-stop-circle animate-pulse' : 'fa-microphone'}`}></i>
+          {isDictating ? 'Stop Listening' : 'Dictate'}
         </button>
         <div className="h-6 w-px bg-white/10 mx-1 flex-shrink-0"></div>
-        <button 
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isProcessing}
-          className="flex-shrink-0 px-4 py-2.5 bg-white/5 hover:bg-amber-600/20 text-gray-300 hover:text-amber-400 rounded-xl text-xs font-bold border border-white/5 transition-all flex items-center gap-2"
-        >
-          <i className="fas fa-camera"></i>
-          OCR Scan
+        <button onClick={() => handleAIAction(AIServiceTask.SUMMARIZE)} className="flex-shrink-0 px-4 py-2.5 bg-white/5 hover:bg-indigo-600/20 text-gray-300 hover:text-indigo-400 rounded-xl text-xs font-bold border border-white/5 transition-all flex items-center gap-2">
+          <i className="fas fa-align-left"></i> Summarize
+        </button>
+        <button onClick={() => handleAIAction(AIServiceTask.REFINE)} className="flex-shrink-0 px-4 py-2.5 bg-white/5 hover:bg-indigo-600/20 text-gray-300 hover:text-indigo-400 rounded-xl text-xs font-bold border border-white/5 transition-all flex items-center gap-2">
+          <i className="fas fa-wand-magic-sparkles"></i> Refine
+        </button>
+        <button onClick={() => fileInputRef.current?.click()} className="flex-shrink-0 px-4 py-2.5 bg-white/5 hover:bg-amber-600/20 text-gray-300 hover:text-amber-400 rounded-xl text-xs font-bold border border-white/5 transition-all flex items-center gap-2">
+          <i className="fas fa-camera"></i> Scan
         </button>
         <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="image/*" className="hidden" />
       </div>

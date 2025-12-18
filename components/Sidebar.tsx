@@ -1,18 +1,39 @@
 
-import React from 'react';
-import { Note } from '../types';
+import React, { useRef } from 'react';
+import { Note, ViewType } from '../types';
 
 interface SidebarProps {
   notes: Note[];
   activeTag: string | null;
+  viewType: ViewType;
   onSelectTag: (tag: string | null) => void;
+  onSelectView: (view: ViewType) => void;
   isOpen: boolean;
   onToggle: () => void;
   onExport: () => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ notes, activeTag, onSelectTag, isOpen, onToggle, onExport }) => {
+const Sidebar: React.FC<SidebarProps> = ({ 
+  notes, 
+  activeTag, 
+  viewType, 
+  onSelectTag, 
+  onSelectView, 
+  isOpen, 
+  onToggle, 
+  onExport 
+}) => {
   const allTags = Array.from(new Set(notes.flatMap(n => n.tags)));
+
+  const handleAllNotes = () => {
+    onSelectView('all');
+    onSelectTag(null);
+  };
+
+  const handleFavorites = () => {
+    onSelectView('favorites');
+    onSelectTag(null);
+  };
 
   return (
     <>
@@ -41,14 +62,15 @@ const Sidebar: React.FC<SidebarProps> = ({ notes, activeTag, onSelectTag, isOpen
           <nav className="flex-1 overflow-y-auto space-y-6">
             <div>
               <button 
-                onClick={() => onSelectTag(null)}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${!activeTag ? 'bg-white/10 text-white' : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'}`}
+                onClick={handleAllNotes}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${viewType === 'all' && !activeTag ? 'bg-white/10 text-white' : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'}`}
               >
                 <i className="fas fa-sticky-note w-5"></i>
                 <span className="font-medium">All Notes</span>
               </button>
               <button 
-                className="w-full flex items-center gap-3 px-3 py-2 mt-1 rounded-lg text-gray-400 hover:bg-white/5 hover:text-gray-200 transition-all"
+                onClick={handleFavorites}
+                className={`w-full flex items-center gap-3 px-3 py-2 mt-1 rounded-lg transition-all ${viewType === 'favorites' ? 'bg-amber-500/10 text-amber-400' : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'}`}
               >
                 <i className="fas fa-star w-5"></i>
                 <span className="font-medium">Favorites</span>
